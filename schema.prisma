@@ -1,0 +1,338 @@
+// Prisma Schema for LandVision SaaS Platform
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User Model
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  passwordHash  String
+  name          String?
+  role          UserRole  @default(USER)
+  isActive      Boolean   @default(true)
+  emailVerified Boolean   @default(false)
+  
+  // Timestamps
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  lastLoginAt   DateTime?
+
+  // Relations
+  sessions      Session[]
+  subscription  Subscription?
+  valuations    Valuation[]
+  decisions     Decision[]
+  financings    Financing[]
+  auditLogs     AuditLog[]
+
+  @@index([email])
+  @@index([role])
+  @@map("users")
+}
+
+enum UserRole {
+  USER
+  ADMIN
+}
+
+// Session Model (for Refresh Tokens)
+model Session {
+  id           String   @id @default(uuid())
+  userId       String
+  refreshToken String   @unique
+  userAgent    String?
+  ipAddress    String?
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([refreshToken])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+// Subscription Model
+model Subscription {
+  id                String           @id @default(uuid())
+  userId            String           @unique
+  plan              SubscriptionPlan @default(FREE)
+  status            SubscriptionStatus @default(ACTIVE)
+  
+  // Stripe fields
+  stripeCustomerId       String?  @unique
+  stripeSubscriptionId   String?  @unique
+  stripePriceId          String?
+  stripeCurrentPeriodEnd DateTime?
+  
+  // Usage limits
+  valuationsUsed    Int      @default(0)
+  decisionsUsed     Int      @default(0)
+  financingsUsed    Int      @default(0)
+  
+  // Reset tracking
+  lastResetAt       DateTime @default(now())
+  
+  // Timestamps
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([stripeCustomerId])
+  @@index([stripeSubscriptionId])
+  @@map("subscriptions")
+}
+
+enum SubscriptionPlan {
+  FREE
+  PRO
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELED
+  PAST_DUE
+  UNPAID
+}
+
+// Country Model
+model Country {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  code      String   @unique // ISO code (e.g., BR, US)
+  currency  String   // e.g., BRL, USD
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  states State[]
+
+  @@index([code])
+  @@map("countries")
+}
+
+// State Model
+model State {
+  id        String   @id @default(uuid())
+  countryId String
+  name      String
+  code      String   // State/Province code
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  country Country @relation(fields: [countryId], references: [id], onDelete: Cascade)
+  cities  City[]
+
+  @@unique([countryId, code])
+  @@index([countryId])
+  @@map("states")
+}
+
+// City Model
+model City {
+  id        String   @id @default(uuid())
+  stateId   String
+  name      String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  state         State          @relation(fields: [stateId], references: [id], onDelete: Cascade)
+  neighborhoods Neighborhood[]
+  valuations    Valuation[]
+
+  @@index([stateId])
+  @@map("cities")
+}
+
+// Neighborhood Model
+model Neighborhood {
+  id        String   @id @default(uuid())
+  cityId    String
+  name      String
+  zone      String?  // e.g., "North", "South", "Central"
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  city       City        @relation(fields: [cityId], references: [id], onDelete: Cascade)
+  valuations Valuation[]
+
+  @@index([cityId])
+  @@map("neighborhoods")
+}
+
+// Valuation Model (Property Valuation with AI)
+model Valuation {
+  id             String         @id @default(uuid())
+  userId         String
+  cityId         String
+  neighborhoodId String?
+  
+  // Property details
+  propertyType   PropertyType
+  area           Float          // in square meters
+  bedrooms       Int
+  bathrooms      Int
+  parkingSpaces  Int            @default(0)
+  age            Int?           // property age in years
+  
+  // Valuation result
+  estimatedValue Float?
+  minValue       Float?
+  maxValue       Float?
+  confidenceScore Float?        // 0-1
+  
+  // AI Analysis
+  aiAnalysis     String?        @db.Text
+  marketTrends   String?        @db.Text
+  
+  // Timestamps
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  // Relations
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  city         City          @relation(fields: [cityId], references: [id])
+  neighborhood Neighborhood? @relation(fields: [neighborhoodId], references: [id])
+
+  @@index([userId])
+  @@index([cityId])
+  @@index([neighborhoodId])
+  @@index([createdAt])
+  @@map("valuations")
+}
+
+enum PropertyType {
+  APARTMENT
+  HOUSE
+  CONDO
+  LAND
+  COMMERCIAL
+}
+
+// Decision Model (Buy vs Rent vs Invest Analysis)
+model Decision {
+  id        String   @id @default(uuid())
+  userId    String
+  
+  // Property details
+  propertyValue      Float
+  rentalValue        Float?
+  
+  // Financial details
+  downPayment        Float?
+  interestRate       Float?
+  loanTerm           Int?           // in months
+  monthlyIncome      Float?
+  
+  // Analysis result
+  recommendation     DecisionType?
+  score              Float?         // 0-100
+  
+  // AI Analysis
+  buyAnalysis        String?        @db.Text
+  rentAnalysis       String?        @db.Text
+  investAnalysis     String?        @db.Text
+  reasoning          String?        @db.Text
+  
+  // Timestamps
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([createdAt])
+  @@map("decisions")
+}
+
+enum DecisionType {
+  BUY
+  RENT
+  INVEST
+}
+
+// Financing Model (Loan Simulation)
+model Financing {
+  id             String   @id @default(uuid())
+  userId         String
+  
+  // Loan details
+  propertyValue  Float
+  downPayment    Float
+  loanAmount     Float
+  interestRate   Float    // annual rate as percentage
+  loanTerm       Int      // in months
+  
+  // Calculation results
+  monthlyPayment Float?
+  totalPayment   Float?
+  totalInterest  Float?
+  
+  // Amortization schedule (stored as JSON)
+  amortizationSchedule String? @db.Text
+  
+  // Timestamps
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([createdAt])
+  @@map("financings")
+}
+
+// Audit Log Model (for LGPD compliance and admin monitoring)
+model AuditLog {
+  id          String       @id @default(uuid())
+  userId      String?
+  action      AuditAction
+  resource    String       // e.g., "user", "valuation", "payment"
+  resourceId  String?
+  details     String?      @db.Text
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime     @default(now())
+
+  // Relations
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([action])
+  @@index([resource])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+enum AuditAction {
+  CREATE
+  READ
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  PAYMENT
+  SUBSCRIPTION_CHANGE
+  DATA_EXPORT
+  DATA_DELETE_REQUEST
+}
